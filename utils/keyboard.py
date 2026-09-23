@@ -74,6 +74,15 @@ def schedule_root(has_group: bool, has_teacher: bool) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(keyboard)
 
 
+def _back_for(prefix: str) -> str:
+    """Куда ведёт «Назад» в зависимости от раздела."""
+    if prefix.startswith("sch"):
+        return "sch:root"
+    if prefix.startswith("reg"):
+        return "set:role"  # обратно к выбору роли
+    return "nav:main"
+
+
 def group_list(groups: Sequence, prefix: str = "sch:g") -> InlineKeyboardMarkup:
     buttons = [
         InlineKeyboardButton(g["name"], callback_data=f"{prefix}:{g['id']}")
@@ -81,20 +90,19 @@ def group_list(groups: Sequence, prefix: str = "sch:g") -> InlineKeyboardMarkup:
     ]
     return InlineKeyboardMarkup(
         _rows(buttons, 2)
-        + [[InlineKeyboardButton("⬅️ Назад", callback_data="sch:root"), BACK_MAIN]]
+        + [[InlineKeyboardButton("⬅️ Назад", callback_data=_back_for(prefix)), BACK_MAIN]]
     )
 
 
 def teacher_list(teachers: Sequence, prefix: str) -> InlineKeyboardMarkup:
-    """Универсальный список преподавателей (для расписания и контактов)."""
+    """Универсальный список преподавателей (для расписания и регистрации)."""
     buttons = [
         InlineKeyboardButton(t["full_name"], callback_data=f"{prefix}:{t['id']}")
         for t in teachers
     ]
-    back = "sch:root" if prefix.startswith("sch") else "nav:main"
     return InlineKeyboardMarkup(
         _rows(buttons, 1)
-        + [[InlineKeyboardButton("⬅️ Назад", callback_data=back), BACK_MAIN]]
+        + [[InlineKeyboardButton("⬅️ Назад", callback_data=_back_for(prefix)), BACK_MAIN]]
     )
 
 

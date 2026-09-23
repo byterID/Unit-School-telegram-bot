@@ -14,6 +14,8 @@ from typing import Any, Iterable, Sequence
 
 import aiosqlite
 
+import config
+
 logger = logging.getLogger(__name__)
 
 SCHEMA = """
@@ -97,7 +99,7 @@ CREATE TABLE IF NOT EXISTS faq (
 
 def _now() -> str:
     """Текущее время в ISO-формате (для служебных полей)."""
-    return datetime.now().isoformat(timespec="seconds")
+    return datetime.now(config.TIMEZONE).isoformat(timespec="seconds")
 
 
 class Database:
