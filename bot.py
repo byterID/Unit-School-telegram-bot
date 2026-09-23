@@ -7,6 +7,13 @@ from __future__ import annotations
 
 import html
 import logging
+import warnings
+
+from telegram.warnings import PTBUserWarning
+
+#диалоги смешивают кнопки и текстовый ввод
+warnings.filterwarnings("ignore", message=r".*per_message=False.*", category=PTBUserWarning)
+
 import logging.handlers
 import sys
 import traceback

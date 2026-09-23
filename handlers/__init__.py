@@ -14,7 +14,7 @@ from telegram.ext import (
     TypeHandler,
 )
 
-from handlers import admin, common, contacts, menu, schedule
+from handlers import admin, changes, common, contacts, menu, schedule
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +59,7 @@ def register_all(app: Application) -> None:
     """
     app.add_handler(TypeHandler(Update, _guard), group=-1)
     admin.register(app)
+    changes.register(app)  # тоже содержит диалог — до common с его обработчиком текста
     common.register(app)
     schedule.register(app)
     menu.register(app)
