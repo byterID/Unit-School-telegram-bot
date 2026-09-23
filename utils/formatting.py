@@ -46,80 +46,21 @@ def esc(value: object) -> str:
 
 
 # --- Расписание -------------------------------------------------------------
-# Функции ниже принимают список dict из utils/timetable.py.
+# Функции ниже принимают список dict из utils/timetable.py
+# (ключи урока + changed, cancelled, note).
+
+CHANGED_MARK = "🔄"
+
 
 def day_label(d: date) -> str:
     return f"{config.WEEKDAYS[d.isoweekday()]}, {d.strftime('%d.%m.%Y')}"
 
 
 def _status(lesson: Mapping) -> str:
+    """'' — обычный урок, 'changed' — замена, 'cancelled' — урока нет."""
     if lesson.get("cancelled"):
         return "cancelled"
     if lesson.get("changed"):
-        return "changed"
-    return ""
-
-
-def _slots(lessons: Sequence[Mapping]) -> list[list[Mapping]]:
-    """Группирует уроки одного времени (подгруппы, совместные уроки)."""
-    return [list(g) for _, g in groupby(lessons, key=lambda l: (l["number"], _status(l)))]
-
-
-def _subjects(slot: Sequence[Mapping]) -> list[str]:
-    return list(dict.fromkeys(l["subject"] for l in slot))
-
-
-def _slot_title(slot: Sequence[Mapping]) -> str:
-    first = slot[0]
-    status = _status(first)
-    if status == "cancelled":
-        return f"❌ <s>{esc(first['subject'])}</s> — {esc(first.get('cancel_text') or 'отменён')}"
-    if status == "changed":
-        title = f"🔄 <b>{esc(first['subject'])}</b>"
-        was = first.get("was")
-        if was and was != first["subject"]:
-            title += f" <i>(вместо: {esc(was)})</i>"
-        return title
-    return " / ".join(f"<b>{esc(s)}</b>" for s in _subjects(slot))
-
-
-def _slot_details(slot: Sequence[Mapping], show_group: bool) -> list[str]:
-    first = slot[0]
-    lines: list[str] = []
-    if show_group:
-        lines.append("👥 " + ", ".join(esc(l["group_name"]) for l in slot))
-    elif not first.get("cancelled"):
-        many = len(slot) > 1
-        for lesson in slot:
-            parts = []
-            if lesson.get("teacher_name"):
-                parts.append(f"👨‍🏫 {esc(lesson['teacher_name'])}")
-            if lesson.get("room"):
-                parts.append(f"📍 {esc(lesson['room'])}")
-            if parts:
-                prefix = f"{esc(lesson['subject'])}: " if many else ""
-                lines.append(prefix + "  ".join(parts))
-    if first.get("note"):
-        lines.append(f"💬 {esc(first['note'])}")
-    return lines
-
-
-_REGULAR = ("", "regular", "normal", "base", "weekly", "none")
-_CANCELLED = ("cancel", "cancelled", "canceled", "removed", "deleted")
-
-
-def _status(row: Mapping) -> str:
-    """'' — обычный урок, 'changed' — замена, 'cancelled' — урока нет."""
-    raw = str(row.get("status") or row.get("change") or "").lower()
-    if (
-        raw in _CANCELLED
-        or any(row.get(k) for k in ("cancelled", "canceled", "is_cancelled"))
-        or str(row.get("subject") or "").strip() in ("", "-", "—")
-    ):
-        return "cancelled"
-    if raw not in _REGULAR or any(
-        row.get(k) for k in ("changed", "is_changed", "replaced", "added")
-    ):
         return "changed"
     return ""
 
@@ -129,50 +70,51 @@ def _uniq(values: Iterable) -> list[str]:
     return list(dict.fromkeys(str(v) for v in values if v))
 
 
+def _slots(lessons: Sequence[Mapping]) -> list[list[Mapping]]:
+    """Уроки с одним номером — один слот (подгруппы, совместные уроки, замены)."""
+    rows = sorted(lessons, key=lambda l: l["number"])
+    return [list(g) for _, g in groupby(rows, key=lambda l: l["number"])]
+
+
 def format_day_schedule(
     lessons: Sequence[Mapping], title: str, show_group: bool = False
 ) -> str:
     """Расписание на один день. Изменения помечаются только значком 🔄."""
     header = f"📅 <b>Расписание</b>\n<i>{esc(title)}</i>\n"
-    rows = [dict(lesson) for lesson in lessons]
-    if not rows:
+    if not lessons:
         return header + "\nЗанятий нет — можно отдыхать 🎉"
 
-    rows.sort(key=lambda r: r.get("number") or 0)
     lines = [header]
-    for number, grp in groupby(rows, key=lambda r: r.get("number")):
-        grp = list(grp)
-        first = grp[0]
-        statuses = [_status(r) for r in grp]
+    for slot in _slots(lessons):
+        first = slot[0]
+        active = [l for l in slot if not l.get("cancelled")]
+        mark = f"{CHANGED_MARK} " if any(_status(l) for l in slot) else ""
 
         start, end = first.get("time_start"), first.get("time_end")
         time = f" {esc(start)}–{esc(end)}" if start and end else ""
-        line = f"\n<b>{esc(number)}.</b>{time} — "
-        notes = ", ".join(esc(n) for n in _uniq(r.get("note") for r in grp))
-        note = f" · <i>{notes}</i>" if notes else ""
+        line = f"\n<b>{first['number']}.</b>{time} — {mark}"
 
-        if all(s == "cancelled" for s in statuses):
-            lines.append(line + "🔄 <i>урока нет</i>" + note)
+        # Примечания берём только у тех уроков, которые реально идут
+        notes = _uniq(l.get("note") for l in (active or slot))
+        note = f" · <i>{', '.join(esc(n) for n in notes)}</i>" if notes else ""
+
+        if not active:
+            lines.append(f"{line}<i>урока нет</i>{note}")
             continue
 
-        active = [r for r, s in zip(grp, statuses) if s != "cancelled"]
-        mark = "🔄 " if any(statuses) else ""
-        subject = " / ".join(esc(s) for s in _uniq(r.get("subject") for r in active))
-
+        subject = " / ".join(esc(s) for s in _uniq(l["subject"] for l in active))
         if show_group:
-            who_list = _uniq(r.get("group_name") for r in active)
+            who_list = _uniq(l.get("group_name") for l in active)
             who = f"👥 {', '.join(esc(w) for w in who_list)}" if who_list else ""
         else:
-            who_list = _uniq(r.get("teacher_name") for r in active)
+            who_list = _uniq(l.get("teacher_name") for l in active)
             who = f"👨‍🏫 {', '.join(esc(w) for w in who_list)}" if who_list else ""
-        rooms = _uniq(r.get("room") for r in active)
-        room = f"📍 {', '.join(esc(x) for x in rooms)}" if rooms else ""
+        rooms = _uniq(l.get("room") for l in active)
+        room = f"📍 {', '.join(esc(r) for r in rooms)}" if rooms else ""
 
         details = "  ".join(p for p in (room, who) if p)
         lines.append(
-            f"{line}{mark}<b>{subject}</b>"
-            + (f"\n   {details}" if details else "")
-            + note
+            f"{line}<b>{subject}</b>" + (f"\n   {details}" if details else "") + note
         )
     return fit("".join(lines))
 
@@ -181,33 +123,28 @@ def format_week_schedule(
     days: Sequence[tuple[date, Sequence[Mapping]]], title: str, show_group: bool = False
 ) -> str:
     parts = [f"📅 <b>Расписание на неделю</b>\n<i>{esc(title)}</i>\n"]
-    has_changes = False
     for d, lessons in days:
-        changed = any(l.get("changed") for l in lessons)
-        has_changes = has_changes or changed
+        changed = any(_status(l) for l in lessons)
         parts.append(
             f"\n<b>— {config.WEEKDAYS[d.isoweekday()]}, {d.strftime('%d.%m')} —</b>"
-            + (" ⚠️" if changed else "")
+            + (f" {CHANGED_MARK}" if changed else "")
         )
         if not lessons:
             parts.append("\n<i>занятий нет</i>\n")
             continue
         for slot in _slots(lessons):
             first = slot[0]
-            status = _status(first)
-            if status == "cancelled":
-                subj = f"❌ <s>{esc(first['subject'])}</s>"
-            elif status == "changed":
-                subj = f"🔄 {esc(first['subject'])}"
+            active = [l for l in slot if not l.get("cancelled")]
+            mark = f"{CHANGED_MARK} " if any(_status(l) for l in slot) else ""
+            if active:
+                subj = " / ".join(esc(s) for s in _uniq(l["subject"] for l in active))
             else:
-                subj = " / ".join(esc(s) for s in _subjects(slot))
-            extra = (
-                " (" + ", ".join(esc(l["group_name"]) for l in slot) + ")" if show_group else ""
-            )
-            parts.append(f"\n{first['number']}. {esc(first['time_start'])} {subj}{extra}")
+                subj = "<i>урока нет</i>"
+            extra = ""
+            if show_group and active:
+                extra = " (" + ", ".join(esc(g) for g in _uniq(l.get("group_name") for l in active)) + ")"
+            parts.append(f"\n{first['number']}. {esc(first['time_start'])} {mark}{subj}{extra}")
         parts.append("\n")
-    if has_changes:
-        parts.append("\n🔄 — замена   ❌ — отменён")
     return fit("".join(parts))
 
 
