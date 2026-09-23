@@ -165,25 +165,36 @@ async def reg_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 async def reg_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Сохраняет привязку: reg:g:<group_id> или reg:t:<teacher_id>."""
     query = update.callback_query
-    await query.answer()
     _, scope, raw_id = query.data.split(":")
     obj_id = int(raw_id)
-    user_id = update.effective_user.id
-    role = "admin" if is_admin(user_id) else ("student" if scope == "g" else "teacher")
+    user = update.effective_user
 
+    # Сначала проверяем, что объект существует — callback_data нельзя доверять
     if scope == "g":
-        await db.set_user_role(user_id, role, group_id=obj_id)
         obj = await db.get_group(obj_id)
-        label = obj["name"] if obj else "—"
+        label = obj["name"] if obj else None
     else:
-        await db.set_user_role(user_id, role, teacher_id=obj_id)
         obj = await db.get_teacher(obj_id)
-        label = obj["full_name"] if obj else "—"
+        label = obj["full_name"] if obj else None
+
+    if label is None:
+        await query.answer("Этой записи больше нет, выберите заново", show_alert=True)
+        return
+    await query.answer()
+
+    # На случай, если пользователь не нажимал /start (например, после сброса БД)
+    await db.upsert_user(user.id, user.username, user.full_name)
+
+    role = "admin" if is_admin(user.id) else ("student" if scope == "g" else "teacher")
+    if scope == "g":
+        await db.set_user_role(user.id, role, group_id=obj_id)
+    else:
+        await db.set_user_role(user.id, role, teacher_id=obj_id)
 
     await query.edit_message_text(
         f"✅ Готово! Профиль: <b>{fmt.esc(label)}</b>\n\nЧем помочь?",
         parse_mode=ParseMode.HTML,
-        reply_markup=kb.main_menu(is_admin(user_id)),
+        reply_markup=kb.main_menu(is_admin(user.id)),
     )
 
 
@@ -239,15 +250,20 @@ async def faq_show(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 # --- Настройки --------------------------------------------------------------
-@safe_handler
-async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_row = await db.get_user(update.effective_user.id)
-    subscribed = bool(user_row["subscribed"]) if user_row else True
+def _settings_view(subscribed: bool):
+    """Текст и клавиатура экрана настроек (без отправки)."""
     text = (
         "⚙️ <b>Настройки</b>\n\n"
         f"Объявления: {'включены 🔔' if subscribed else 'отключены 🔕'}"
     )
-    markup = kb.settings_menu(subscribed)
+    return text, kb.settings_menu(subscribed)
+
+
+@safe_handler
+async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_row = await db.get_user(update.effective_user.id)
+    subscribed = bool(user_row["subscribed"]) if user_row else True
+    text, markup = _settings_view(subscribed)
     if update.callback_query:
         await update.callback_query.answer()
         await update.callback_query.edit_message_text(
@@ -266,9 +282,15 @@ async def settings_action(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     parts = query.data.split(":")
 
     if parts[1] == "sub":
-        await db.set_subscription(update.effective_user.id, parts[2] == "1")
-        await query.answer("Настройка сохранена")
-        await cmd_settings(update, context)
+        subscribed = parts[2] == "1"
+        await db.set_subscription(update.effective_user.id, subscribed)
+        await query.answer(
+            "Объявления включены 🔔" if subscribed else "Объявления отключены 🔕"
+        )
+        text, markup = _settings_view(subscribed)
+        await query.edit_message_text(
+            text, parse_mode=ParseMode.HTML, reply_markup=markup
+        )
         return
 
     await query.answer()

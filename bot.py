@@ -97,7 +97,8 @@ async def post_init(app: Application) -> None:
     """Выполняется после инициализации: БД, seed-данные, меню команд."""
     init_db(config.DB_PATH)
     await db.connect()
-    await sample_data.seed(db)
+    if config.SEED_DEMO:
+        await sample_data.seed(db)
 
     # Общее меню команд для всех пользователей
     await app.bot.set_my_commands(config.USER_COMMANDS, scope=BotCommandScopeDefault())

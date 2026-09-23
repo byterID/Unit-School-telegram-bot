@@ -132,9 +132,7 @@ def format_teacher_card(teacher: Mapping) -> str:
     if teacher["subject"]:
         lines.append(f"📚 Предмет: {esc(teacher['subject'])}")
     if teacher["phone"]:
-        phone = esc(teacher["phone"])
-        # tel: делает номер кликабельным в мобильном клиенте
-        lines.append(f'📞 Телефон: <a href="tel:{phone}">{phone}</a>')
+        lines.append(f"📞 Телефон: {esc(teacher['phone'])}")
     if teacher["room"]:
         lines.append(f"🚪 Кабинет: {esc(teacher['room'])}")
     if teacher["email"]:
@@ -152,11 +150,22 @@ def format_contacts_list(teachers: Sequence[Mapping]) -> str:
 
 
 # --- Объявления -------------------------------------------------------------
-def format_announcements(rows: Sequence[Mapping]) -> str:
+def format_announcements(rows: Sequence[Mapping], limit: int = 3900) -> str:
+    """
+    Последние объявления. Текст уже хранится в безопасном HTML (text_html).
+    Добавляем объявления, пока укладываемся в лимит сообщения Telegram.
+    """
     if not rows:
         return "📢 Объявлений пока нет."
-    parts = ["📢 <b>Последние объявления</b>\n"]
+    header = "📢 <b>Последние объявления</b>\n"
+    parts = [header]
+    total = len(header)
     for row in rows:
         created = datetime.fromisoformat(row["created_at"]).strftime("%d.%m.%Y %H:%M")
-        parts.append(f"\n<i>{created}</i>\n{esc(row['text'])}\n")
+        block = f"\n<i>{created}</i>\n{row['text']}\n"
+        if total + len(block) > limit and len(parts) > 1:
+            break
+        parts.append(block)
+        total += len(block)
     return "".join(parts)
+

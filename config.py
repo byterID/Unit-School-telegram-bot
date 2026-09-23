@@ -71,6 +71,9 @@ TIMEZONE_NAME: str = os.getenv("TIMEZONE", "Asia/Yerevan")
 TIMEZONE = _load_timezone(TIMEZONE_NAME)
 
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
+
+# Заливать демонстрационные данные в пустую БД (только для разработки)
+SEED_DEMO: bool = os.getenv("SEED_DEMO", "0") == "1"
 LOG_FILE: Path = Path(os.getenv("LOG_FILE", BASE_DIR / "bot.log"))
 
 # Пауза между сообщениями при рассылке (Telegram: ~30 сообщений/сек).

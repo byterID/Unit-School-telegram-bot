@@ -223,21 +223,31 @@ async def ann_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 @admin_only
 async def ann_preview(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Показывает предпросмотр и просит подтверждение."""
-    text = (update.message.text or "").strip()
-    if not text:
-        await update.message.reply_text("Текст пустой, попробуйте снова.")
+    msg = update.message
+    plain = (msg.text or "").strip()
+    if not plain:
+        await msg.reply_text("Текст пустой, попробуйте снова.")
+        return ANN_TEXT
+    if len(plain) > 3500:
+        await msg.reply_text(
+            f"Слишком длинно: {len(plain)} символов (максимум 3500). "
+            "Сократите текст и пришлите снова."
+        )
         return ANN_TEXT
 
-    context.user_data["ann_text"] = text[:3500]  # запас до лимита 4096
+    # text_html собирает HTML из entities сообщения и сам экранирует
+    # остальной текст — форматирование админа сохраняется безопасно.
+    context.user_data["ann_text"] = msg.text_html
     targets = await db.get_broadcast_targets()
-    await update.message.reply_text(
+    await msg.reply_text(
         "<b>Предпросмотр объявления:</b>\n\n"
-        f"📢 {fmt.esc(context.user_data['ann_text'])}\n\n"
+        f"📢 {context.user_data['ann_text']}\n\n"
         f"Получателей: <b>{len(targets)}</b>. Отправить?",
         parse_mode=ParseMode.HTML,
         reply_markup=kb.confirm_broadcast(),
     )
     return ConversationHandler.END  # дальше работают callback-кнопки
+
 
 
 @admin_only
@@ -276,7 +286,7 @@ async def _broadcast(
 ) -> None:
     """Последовательная рассылка с учётом лимитов Telegram."""
     targets = await db.get_broadcast_targets()
-    payload = f"📢 <b>Объявление</b>\n\n{fmt.esc(text)}"
+    payload = f"📢 <b>Объявление</b>\n\n{text}"
     sent = failed = blocked = 0
 
     for user_id in targets:
@@ -325,18 +335,28 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 def register(app: Application) -> None:
+    meal_re = "|".join(config.MEAL_TYPES)  # breakfast|lunch|snack
+
+    # Любая команда внутри диалога завершает его, а не оставляет «висеть»
+    fallbacks = [
+        CommandHandler("cancel", cancel),
+        MessageHandler(filters.COMMAND, cancel),
+    ]
+
     # Диалоги: добавление блюда и создание объявления
     app.add_handler(
         ConversationHandler(
             entry_points=[
-                CallbackQueryHandler(dish_add_start, pattern=r"^adm:dadd:[1-7]:\w+$")
+                CallbackQueryHandler(
+                    dish_add_start, pattern=rf"^adm:dadd:[1-7]:({meal_re})$"
+                )
             ],
             states={
                 ADD_DISH: [
                     MessageHandler(filters.TEXT & ~filters.COMMAND, dish_add_save)
                 ]
             },
-            fallbacks=[CommandHandler("cancel", cancel)],
+            fallbacks=fallbacks,
             conversation_timeout=300,
             name="add_dish",
         )
@@ -352,7 +372,7 @@ def register(app: Application) -> None:
                     MessageHandler(filters.TEXT & ~filters.COMMAND, ann_preview)
                 ]
             },
-            fallbacks=[CommandHandler("cancel", cancel)],
+            fallbacks=fallbacks,
             conversation_timeout=600,
             name="announcement",
         )
@@ -364,9 +384,12 @@ def register(app: Application) -> None:
     app.add_handler(CallbackQueryHandler(menu_choose_day, pattern=r"^adm:menu$"))
     app.add_handler(CallbackQueryHandler(menu_choose_meal, pattern=r"^adm:mday:[1-7]$"))
     app.add_handler(
-        CallbackQueryHandler(menu_edit_meal, pattern=r"^adm:meal:[1-7]:\w+$")
+        CallbackQueryHandler(menu_edit_meal, pattern=rf"^adm:meal:[1-7]:({meal_re})$")
     )
     app.add_handler(CallbackQueryHandler(dish_delete, pattern=r"^adm:ddel:\d+$"))
-    app.add_handler(CallbackQueryHandler(meal_clear, pattern=r"^adm:dclr:[1-7]:\w+$"))
+    app.add_handler(
+        CallbackQueryHandler(meal_clear, pattern=rf"^adm:dclr:[1-7]:({meal_re})$")
+    )
     app.add_handler(CallbackQueryHandler(ann_send, pattern=r"^adm:annsend$"))
     app.add_handler(CallbackQueryHandler(ann_cancel_cb, pattern=r"^adm:anncancel$"))
+
