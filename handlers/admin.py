@@ -1,13 +1,13 @@
 """
-Админ-панель: редактирование меню столовой, объявления с рассылкой,
-статистика. Доступ — только для user_id из ADMIN_IDS.
+Админ-панель: меню столовой, объявления, коды классов, привязка
+преподавателей, статистика. Доступ — только для ADMIN_IDS.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 
-from telegram import Update
+from telegram import CallbackQuery, Update
 from telegram.constants import ParseMode
 from telegram.error import Forbidden, RetryAfter, TelegramError
 from telegram.ext import (
@@ -28,11 +28,14 @@ from utils.decorators import admin_only, safe_handler
 
 logger = logging.getLogger(__name__)
 
-# Состояния диалогов
 ADD_DISH, ANN_TEXT = range(2)
 
 
-# --- Корень админ-панели ----------------------------------------------------
+def _invite_link(context: ContextTypes.DEFAULT_TYPE, code: str) -> str:
+    return f"https://t.me/{context.bot.username}?start={code}"
+
+
+# --- Корень -----------------------------------------------------------------
 @admin_only
 @safe_handler
 async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -43,9 +46,7 @@ async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             text, parse_mode=ParseMode.HTML, reply_markup=kb.admin_root()
         )
     elif update.message:
-        await update.message.reply_text(
-            text, parse_mode=ParseMode.HTML, reply_markup=kb.admin_root()
-        )
+        await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb.admin_root())
 
 
 @admin_only
@@ -56,29 +57,26 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     s = await db.get_stats()
     text = (
         "📊 <b>Статистика</b>\n\n"
-        f"👥 Пользователей: {s.get('users_total', 0)}\n"
+        f"👥 Всего нажимали /start: {s.get('users_total', 0)}\n"
+        f"🔑 Вошли по коду: {s.get('verified', 0)}\n"
         f"🎒 Учеников/родителей: {s.get('students', 0)}\n"
         f"👨‍🏫 Преподавателей: {s.get('teachers_users', 0)}\n"
-        f"🔔 Подписаны на объявления: {s.get('subscribed', 0)}\n"
+        f"🔔 Получают объявления: {s.get('subscribed', 0)}\n"
         f"🚫 Заблокировали бота: {s.get('blocked', 0)}\n\n"
         f"📅 Уроков в расписании: {s.get('lessons', 0)}\n"
         f"🍽 Блюд в меню: {s.get('dishes', 0)}\n"
-        f"📢 Объявлений отправлено: {s.get('announcements', 0)}"
+        f"📢 Объявлений: {s.get('announcements', 0)}"
     )
-    await query.edit_message_text(
-        text, parse_mode=ParseMode.HTML, reply_markup=kb.admin_root()
-    )
+    await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=kb.admin_root())
 
 
-# --- Редактирование меню столовой -------------------------------------------
+# --- Меню столовой ----------------------------------------------------------
 @admin_only
 @safe_handler
 async def menu_choose_day(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
-    await query.edit_message_text(
-        "🍽 Выберите день недели:", reply_markup=kb.admin_menu_days()
-    )
+    await query.edit_message_text("🍽 Выберите день недели:", reply_markup=kb.admin_menu_days())
 
 
 @admin_only
@@ -94,21 +92,12 @@ async def menu_choose_meal(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     )
 
 
-async def _render_dish_editor(query, weekday: int, meal_type: str) -> None:
-    """Перерисовывает редактор блюд для выбранного приёма пищи."""
+async def _render_dish_editor(query: CallbackQuery, weekday: int, meal_type: str) -> None:
     dishes = await db.get_dishes(weekday, meal_type)
-    listing = (
-        "\n".join(f"• {fmt.esc(d['name'])}" for d in dishes)
-        if dishes
-        else "<i>пусто</i>"
-    )
-    text = (
-        f"🍽 <b>{config.WEEKDAYS[weekday]}</b> — "
-        f"{config.MEAL_TYPES.get(meal_type, meal_type)}\n\n"
-        f"{listing}\n\nНажмите на блюдо, чтобы удалить его."
-    )
+    listing = "\n".join(f"• {fmt.esc(d['name'])}" for d in dishes) if dishes else "<i>пусто</i>"
     await query.edit_message_text(
-        text,
+        f"🍽 <b>{config.WEEKDAYS[weekday]}</b> — {config.MEAL_TYPES.get(meal_type, meal_type)}\n\n"
+        f"{listing}\n\nНажмите на блюдо, чтобы удалить его.",
         parse_mode=ParseMode.HTML,
         reply_markup=kb.admin_dish_editor(weekday, meal_type, dishes),
     )
@@ -117,7 +106,6 @@ async def _render_dish_editor(query, weekday: int, meal_type: str) -> None:
 @admin_only
 @safe_handler
 async def menu_edit_meal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """adm:meal:<weekday>:<meal_type>"""
     query = update.callback_query
     await query.answer()
     _, _, raw_day, meal_type = query.data.split(":")
@@ -127,7 +115,6 @@ async def menu_edit_meal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 @admin_only
 @safe_handler
 async def dish_delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """adm:ddel:<dish_id>"""
     query = update.callback_query
     dish_id = int(query.data.split(":")[2])
     dish = await db.get_dish(dish_id)
@@ -143,30 +130,24 @@ async def dish_delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 @admin_only
 @safe_handler
 async def meal_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """adm:dclr:<weekday>:<meal_type>"""
     query = update.callback_query
     _, _, raw_day, meal_type = query.data.split(":")
-    weekday = int(raw_day)
-    await db.clear_meal(weekday, meal_type)
+    await db.clear_meal(int(raw_day), meal_type)
     await query.answer("Приём пищи очищен")
-    await _render_dish_editor(query, weekday, meal_type)
+    await _render_dish_editor(query, int(raw_day), meal_type)
 
 
-# --- Диалог: добавление блюда ----------------------------------------------
 @admin_only
 async def dish_add_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """adm:dadd:<weekday>:<meal_type> — запрашиваем название(я)."""
     query = update.callback_query
     await query.answer()
     _, _, raw_day, meal_type = query.data.split(":")
     context.user_data["dish_weekday"] = int(raw_day)
     context.user_data["dish_meal"] = meal_type
     await query.edit_message_text(
-        f"✍️ Пришлите название блюда для "
-        f"<b>{config.WEEKDAYS[int(raw_day)]}</b> — "
+        f"✍️ Пришлите название блюда для <b>{config.WEEKDAYS[int(raw_day)]}</b> — "
         f"{config.MEAL_TYPES.get(meal_type, meal_type)}.\n\n"
-        "Можно отправить несколько блюд — каждое с новой строки.\n"
-        "Отмена: /cancel",
+        "Можно несколько — каждое с новой строки.\nОтмена: /cancel",
         parse_mode=ParseMode.HTML,
     )
     return ADD_DISH
@@ -174,7 +155,6 @@ async def dish_add_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 @admin_only
 async def dish_add_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Сохраняет одно или несколько блюд из текста сообщения."""
     weekday = context.user_data.get("dish_weekday")
     meal_type = context.user_data.get("dish_meal")
     if weekday is None or meal_type is None:
@@ -185,18 +165,13 @@ async def dish_add_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     if not names:
         await update.message.reply_text("Пустое название. Попробуйте ещё раз.")
         return ADD_DISH
-
-    for name in names:
+    for name in names[:30]:
         await db.add_dish(weekday, meal_type, name[:200])
-    logger.info(
-        "Админ %s добавил %d блюд(о) на день %s (%s)",
-        update.effective_user.id, len(names), weekday, meal_type,
-    )
 
     dishes = await db.get_dishes(weekday, meal_type)
     await update.message.reply_text(
-        f"✅ Добавлено: {len(names)}\n\n"
-        + "\n".join(f"• {fmt.esc(d['name'])}" for d in dishes),
+        fmt.fit(f"✅ Добавлено: {min(len(names), 30)}\n\n"
+                + "\n".join(f"• {fmt.esc(d['name'])}" for d in dishes)),
         parse_mode=ParseMode.HTML,
         reply_markup=kb.admin_dish_editor(weekday, meal_type, dishes),
     )
@@ -205,24 +180,20 @@ async def dish_add_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     return ConversationHandler.END
 
 
-# --- Диалог: объявление + рассылка ------------------------------------------
+# --- Объявления -------------------------------------------------------------
 @admin_only
 async def ann_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = "📢 Пришлите текст объявления (можно с форматированием).\n\nОтмена: /cancel"
     if update.callback_query:
         await update.callback_query.answer()
-        await update.callback_query.edit_message_text(
-            "📢 Пришлите текст объявления.\n\nОтмена: /cancel"
-        )
+        await update.callback_query.edit_message_text(text)
     else:
-        await update.message.reply_text(
-            "📢 Пришлите текст объявления.\n\nОтмена: /cancel"
-        )
+        await update.message.reply_text(text)
     return ANN_TEXT
 
 
 @admin_only
 async def ann_preview(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Показывает предпросмотр и просит подтверждение."""
     msg = update.message
     plain = (msg.text or "").strip()
     if not plain:
@@ -230,14 +201,11 @@ async def ann_preview(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         return ANN_TEXT
     if len(plain) > 3500:
         await msg.reply_text(
-            f"Слишком длинно: {len(plain)} символов (максимум 3500). "
-            "Сократите текст и пришлите снова."
+            f"Слишком длинно: {len(plain)} символов (максимум 3500). Сократите и пришлите снова."
         )
         return ANN_TEXT
 
-    # text_html собирает HTML из entities сообщения и сам экранирует
-    # остальной текст — форматирование админа сохраняется безопасно.
-    context.user_data["ann_text"] = msg.text_html
+    context.user_data["ann_text"] = msg.text_html  # безопасный HTML из entities
     targets = await db.get_broadcast_targets()
     await msg.reply_text(
         "<b>Предпросмотр объявления:</b>\n\n"
@@ -246,8 +214,7 @@ async def ann_preview(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         parse_mode=ParseMode.HTML,
         reply_markup=kb.confirm_broadcast(),
     )
-    return ConversationHandler.END  # дальше работают callback-кнопки
-
+    return ConversationHandler.END
 
 
 @admin_only
@@ -262,7 +229,6 @@ async def ann_cancel_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 @admin_only
 @safe_handler
 async def ann_send(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Запускает рассылку в фоне, чтобы не блокировать обработчик."""
     query = update.callback_query
     await query.answer()
     text = context.user_data.pop("ann_text", None)
@@ -271,41 +237,28 @@ async def ann_send(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "Текст потерян, создайте объявление заново.", reply_markup=kb.admin_root()
         )
         return
-
     ann_id = await db.add_announcement(update.effective_user.id, text)
     await query.edit_message_text("📤 Рассылка запущена…")
-
-    # create_task гарантирует, что задача корректно завершится при shutdown
-    context.application.create_task(
-        _broadcast(context, ann_id, text, query.message.chat_id)
-    )
+    context.application.create_task(_broadcast(context, ann_id, text, query.message.chat_id))
 
 
 async def _broadcast(
     context: ContextTypes.DEFAULT_TYPE, ann_id: int, text: str, report_chat_id: int
 ) -> None:
-    """Последовательная рассылка с учётом лимитов Telegram."""
     targets = await db.get_broadcast_targets()
     payload = f"📢 <b>Объявление</b>\n\n{text}"
     sent = failed = blocked = 0
-
     for user_id in targets:
         try:
-            await context.bot.send_message(
-                chat_id=user_id, text=payload, parse_mode=ParseMode.HTML
-            )
+            await context.bot.send_message(user_id, payload, parse_mode=ParseMode.HTML)
             sent += 1
         except Forbidden:
-            # Пользователь заблокировал бота — исключаем из будущих рассылок
             await db.mark_blocked(user_id)
             blocked += 1
         except RetryAfter as exc:
-            logger.warning("Flood control: пауза %s c", exc.retry_after)
-            await asyncio.sleep(exc.retry_after + 1)
+            await asyncio.sleep(float(exc.retry_after) + 1)
             try:
-                await context.bot.send_message(
-                    chat_id=user_id, text=payload, parse_mode=ParseMode.HTML
-                )
+                await context.bot.send_message(user_id, payload, parse_mode=ParseMode.HTML)
                 sent += 1
             except TelegramError:
                 failed += 1
@@ -315,81 +268,202 @@ async def _broadcast(
         await asyncio.sleep(config.BROADCAST_DELAY)
 
     await db.set_announcement_sent(ann_id, sent)
-    logger.info("Рассылка #%s: доставлено %s, ошибок %s", ann_id, sent, failed + blocked)
     await context.bot.send_message(
-        chat_id=report_chat_id,
-        text=(
-            f"✅ Рассылка завершена\n\n"
-            f"Доставлено: {sent}\nЗаблокировали бота: {blocked}\nОшибок: {failed}"
-        ),
+        report_chat_id,
+        f"✅ Рассылка завершена\n\nДоставлено: {sent}\n"
+        f"Заблокировали бота: {blocked}\nОшибок: {failed}",
         reply_markup=kb.admin_root(),
     )
 
 
+# --- Коды классов -----------------------------------------------------------
+@admin_only
+@safe_handler
+async def inv_groups(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    groups = await db.get_groups()
+    if not groups:
+        await query.edit_message_text(
+            "Классов пока нет — сначала импортируйте расписание.", reply_markup=kb.admin_back()
+        )
+        return
+    await query.edit_message_text(
+        "🎟 <b>Коды приглашения</b>\n\nУ каждого класса свой код. Выберите класс:",
+        parse_mode=ParseMode.HTML,
+        reply_markup=kb.admin_invite_groups(groups),
+    )
+
+
+@admin_only
+@safe_handler
+async def inv_show(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """adm:ig:<id> — показать код; adm:igr:<id> — выпустить новый."""
+    query = update.callback_query
+    action, raw_id = query.data.split(":")[1:]
+    group_id = int(raw_id)
+    group = await db.get_group(group_id)
+    if group is None:
+        await query.answer("Класс не найден", show_alert=True)
+        return
+
+    invite = None if action == "igr" else await db.get_active_invite("group", group_id)
+    if invite is None:
+        code, uses = await db.create_invite("group", group_id, update.effective_user.id), 0
+        logger.info("Админ %s выпустил код для класса %s", update.effective_user.id, group_id)
+    else:
+        code, uses = invite["code"], invite["uses"]
+    await query.answer("Новый код выпущен ✅" if action == "igr" else None)
+
+    await query.edit_message_text(
+        f"🎟 <b>{fmt.esc(group['name'])}</b>\n\n"
+        f"Код: <code>{code}</code>\n"
+        f"Ссылка: {_invite_link(context, code)}\n"
+        f"Воспользовались: {uses}\n\n"
+        "Отправьте ссылку в родительский чат класса.\n"
+        "Если код попал к посторонним, выпустите новый. Старый сразу перестанет "
+        "работать, а те, кто уже вошёл, останутся.",
+        parse_mode=ParseMode.HTML,
+        reply_markup=kb.admin_group_invite(group_id),
+    )
+
+
+# --- Преподаватели ----------------------------------------------------------
+@admin_only
+@safe_handler
+async def tch_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """adm:tch:<страница>"""
+    query = update.callback_query
+    await query.answer()
+    page = int(query.data.split(":")[2])
+    teachers = await db.get_teachers()
+    if not teachers:
+        await query.edit_message_text(
+            "Преподавателей нет — сначала импортируйте расписание.", reply_markup=kb.admin_back()
+        )
+        return
+    linked = await db.get_linked_teacher_ids()
+    await query.edit_message_text(
+        "👨‍🏫 <b>Преподаватели</b>\n\n"
+        "✅ аккаунт привязан, ▫️ ещё нет.\n"
+        "Выберите преподавателя, чтобы выдать ему ссылку для входа.",
+        parse_mode=ParseMode.HTML,
+        reply_markup=kb.admin_teachers(teachers, linked, page),
+    )
+
+
+async def _render_teacher(query: CallbackQuery, teacher_id: int, page: int, extra: str = "") -> None:
+    teacher = await db.get_teacher(teacher_id)
+    if teacher is None:
+        await query.edit_message_text("Преподаватель не найден.", reply_markup=kb.admin_back())
+        return
+    user = await db.get_teacher_user(teacher_id)
+    if user:
+        uname = f" (@{fmt.esc(user['username'])})" if user["username"] else ""
+        status = f"✅ Привязан: {fmt.esc(user['full_name'])}{uname}"
+    else:
+        status = "▫️ Аккаунт не привязан"
+    await query.edit_message_text(
+        f"👨‍🏫 <b>{fmt.esc(teacher['full_name'])}</b>\n"
+        f"📚 {fmt.esc(teacher['subject'] or '—')}\n\n{status}{extra}",
+        parse_mode=ParseMode.HTML,
+        reply_markup=kb.admin_teacher_card(teacher_id, page, user is not None),
+    )
+
+
+@admin_only
+@safe_handler
+async def tch_card(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """adm:t:<id>:<страница>"""
+    query = update.callback_query
+    await query.answer()
+    _, _, raw_id, raw_page = query.data.split(":")
+    await _render_teacher(query, int(raw_id), int(raw_page))
+
+
+@admin_only
+@safe_handler
+async def tch_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """adm:tl:<id>:<страница> — одноразовая ссылка для входа преподавателя."""
+    query = update.callback_query
+    _, _, raw_id, raw_page = query.data.split(":")
+    teacher_id = int(raw_id)
+    if await db.get_teacher(teacher_id) is None:
+        await query.answer("Преподаватель не найден", show_alert=True)
+        return
+    code = await db.create_invite("teacher", teacher_id, update.effective_user.id, max_uses=1)
+    await query.answer("Ссылка создана")
+    logger.info("Админ %s выдал ссылку преподавателю %s", update.effective_user.id, teacher_id)
+    extra = (
+        "\n\n🔗 <b>Ссылка для входа</b> (одноразовая):\n"
+        f"{_invite_link(context, code)}\n\n"
+        "Отправьте её лично преподавателю. Прежние ссылки больше не действуют."
+    )
+    await _render_teacher(query, teacher_id, int(raw_page), extra)
+
+
+@admin_only
+@safe_handler
+async def tch_unlink(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """adm:tu:<id>:<страница>"""
+    query = update.callback_query
+    _, _, raw_id, raw_page = query.data.split(":")
+    await db.unlink_teacher(int(raw_id))
+    await query.answer("Аккаунт отвязан")
+    logger.info("Админ %s отвязал преподавателя %s", update.effective_user.id, raw_id)
+    await _render_teacher(query, int(raw_id), int(raw_page))
+
+
+# --- Выход из диалогов ------------------------------------------------------
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Универсальный выход из любого диалога."""
-    context.user_data.clear()
+    for key in ("dish_weekday", "dish_meal", "ann_text"):
+        context.user_data.pop(key, None)
     if update.message:
-        await update.message.reply_text("Отменено.", reply_markup=kb.admin_root())
+        text = "Отменено." if update.message.text.startswith("/cancel") else \
+            "Действие отменено. Повторите команду, если она нужна."
+        await update.message.reply_text(text, reply_markup=kb.admin_root())
     return ConversationHandler.END
 
 
 def register(app: Application) -> None:
-    meal_re = "|".join(config.MEAL_TYPES)  # breakfast|lunch|snack
+    meal_re = "|".join(config.MEAL_TYPES)
+    fallbacks = [CommandHandler("cancel", cancel), MessageHandler(filters.COMMAND, cancel)]
 
-    # Любая команда внутри диалога завершает его, а не оставляет «висеть»
-    fallbacks = [
-        CommandHandler("cancel", cancel),
-        MessageHandler(filters.COMMAND, cancel),
-    ]
-
-    # Диалоги: добавление блюда и создание объявления
-    app.add_handler(
-        ConversationHandler(
-            entry_points=[
-                CallbackQueryHandler(
-                    dish_add_start, pattern=rf"^adm:dadd:[1-7]:({meal_re})$"
-                )
-            ],
-            states={
-                ADD_DISH: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, dish_add_save)
-                ]
-            },
-            fallbacks=fallbacks,
-            conversation_timeout=300,
-            name="add_dish",
-        )
-    )
-    app.add_handler(
-        ConversationHandler(
-            entry_points=[
-                CommandHandler("announce", ann_start),
-                CallbackQueryHandler(ann_start, pattern=r"^adm:ann$"),
-            ],
-            states={
-                ANN_TEXT: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, ann_preview)
-                ]
-            },
-            fallbacks=fallbacks,
-            conversation_timeout=600,
-            name="announcement",
-        )
-    )
+    app.add_handler(ConversationHandler(
+        entry_points=[CallbackQueryHandler(dish_add_start, pattern=rf"^adm:dadd:[1-7]:({meal_re})$")],
+        states={ADD_DISH: [MessageHandler(filters.TEXT & ~filters.COMMAND, dish_add_save)]},
+        fallbacks=fallbacks,
+        conversation_timeout=300,
+        name="add_dish",
+    ))
+    app.add_handler(ConversationHandler(
+        entry_points=[
+            CommandHandler("announce", ann_start),
+            CallbackQueryHandler(ann_start, pattern=r"^adm:ann$"),
+        ],
+        states={ANN_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, ann_preview)]},
+        fallbacks=fallbacks,
+        conversation_timeout=600,
+        name="announcement",
+    ))
 
     app.add_handler(CommandHandler("admin", cmd_admin))
-    app.add_handler(CallbackQueryHandler(cmd_admin, pattern=r"^adm:root$"))
-    app.add_handler(CallbackQueryHandler(admin_stats, pattern=r"^adm:stats$"))
-    app.add_handler(CallbackQueryHandler(menu_choose_day, pattern=r"^adm:menu$"))
-    app.add_handler(CallbackQueryHandler(menu_choose_meal, pattern=r"^adm:mday:[1-7]$"))
-    app.add_handler(
-        CallbackQueryHandler(menu_edit_meal, pattern=rf"^adm:meal:[1-7]:({meal_re})$")
-    )
-    app.add_handler(CallbackQueryHandler(dish_delete, pattern=r"^adm:ddel:\d+$"))
-    app.add_handler(
-        CallbackQueryHandler(meal_clear, pattern=rf"^adm:dclr:[1-7]:({meal_re})$")
-    )
-    app.add_handler(CallbackQueryHandler(ann_send, pattern=r"^adm:annsend$"))
-    app.add_handler(CallbackQueryHandler(ann_cancel_cb, pattern=r"^adm:anncancel$"))
-
+    handlers = [
+        (cmd_admin, r"^adm:root$"),
+        (admin_stats, r"^adm:stats$"),
+        (menu_choose_day, r"^adm:menu$"),
+        (menu_choose_meal, r"^adm:mday:[1-7]$"),
+        (menu_edit_meal, rf"^adm:meal:[1-7]:({meal_re})$"),
+        (dish_delete, r"^adm:ddel:\d+$"),
+        (meal_clear, rf"^adm:dclr:[1-7]:({meal_re})$"),
+        (ann_send, r"^adm:annsend$"),
+        (ann_cancel_cb, r"^adm:anncancel$"),
+        (inv_groups, r"^adm:inv$"),
+        (inv_show, r"^adm:igr?:\d+$"),
+        (tch_list, r"^adm:tch:\d+$"),
+        (tch_card, r"^adm:t:\d+:\d+$"),
+        (tch_link, r"^adm:tl:\d+:\d+$"),
+        (tch_unlink, r"^adm:tu:\d+:\d+$"),
+    ]
+    for callback, pattern in handlers:
+        app.add_handler(CallbackQueryHandler(callback, pattern=pattern))
