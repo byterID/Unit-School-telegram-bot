@@ -1,0 +1,10 @@
+.env
+*.db
+*.db-journal
+*.log
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.idea/
+.vscode/
