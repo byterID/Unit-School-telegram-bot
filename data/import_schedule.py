@@ -5,9 +5,10 @@
     python -m data.import_schedule "расписание.xlsx" --dry-run   # только проверка
     python -m data.import_schedule "расписание.xlsx"             # загрузка в БД
 
-Формат листа:
-    строка-заголовок: «День недели | Урок | Время | 1 класс | 2 класс | ...»
-    каждый урок — две строки: в первой предметы, во второй преподаватели.
+Формат листа: «День недели | Урок | Время | 1 класс | 2 класс | ...»
+Поддерживаются оба варианта:
+    • предмет и ФИО в одной ячейке через перенос строки (Alt+Enter);
+    • предмет в одной строке, ФИО — в строке ниже.
 
 Расписание заменяется целиком. Классы и преподаватели сохраняют свои id,
 поэтому привязки пользователей и коды приглашения не слетают.
@@ -25,13 +26,14 @@ from pathlib import Path
 from openpyxl import load_workbook
 
 import config
+from data.import_teachers import compatible
 from database import init_db
 
-# Имена, записанные в таблице не как «Фамилия Имя Отчество».
-# Короткие варианты («Мазурова», «Филатов») распознаются автоматически.
+# Имена, записанные в таблице нестандартно: «как в таблице» -> «полное ФИО».
+# Короткие варианты («Мазурова», «Филатов») и переставленные имя/фамилия
+# («Эльмира Навасардян») распознаются автоматически.
 TEACHER_ALIASES: dict[str, str] = {
-    "Эльмира Навасардян": "Навасардян Эльмира",
-    # "Гоар": "Фамилия Гоар Отчество",   # ← допишите, когда узнаете ФИО
+    # "Гоар": "Симонянц Гоар Эдуардовна",
 }
 
 EMPTY = {"", "nan", "none", "-", "—", "–"}
@@ -46,6 +48,14 @@ def clean(value) -> str:
         return ""
     text = re.sub(r"\s+", " ", str(value)).strip()
     return "" if text.lower() in EMPTY else text
+
+
+def lines(value) -> list[str]:
+    """Ячейка -> непустые строки (Excel иногда хранит перенос как _x000D_)."""
+    if value is None:
+        return []
+    text = str(value).replace("_x000D_", "\n")
+    return [c for c in (clean(x) for x in text.splitlines()) if c]
 
 
 def _cell(row, idx):
@@ -149,14 +159,19 @@ def parse_schedule(path: str | Path) -> ParseResult:
 
         day_name = config.WEEKDAYS[weekday]
         for col, group in group_cols.items():
-            subject = clean(_cell(row, col))
-            teacher = clean(_cell(teacher_row, col))
-            if not subject:
+            parts = lines(_cell(row, col))
+            teacher = " ".join(lines(_cell(teacher_row, col)))
+            if not parts:
                 if teacher:
                     result.warnings.append(
                         f"{group}, {day_name}, {number} урок: преподаватель без предмета"
                     )
                 continue
+            subject = parts[0]
+            if not teacher and len(parts) > 1:
+                teacher = " ".join(parts[1:])   # «Предмет⏎ФИО» в одной ячейке
+            elif len(parts) > 1:
+                subject = " ".join(parts)
             raw.append((group, weekday, number, start, end, subject, teacher or None))
         i += step
 
@@ -187,7 +202,7 @@ def parse_schedule(path: str | Path) -> ParseResult:
         if name in full_names:
             resolved[name] = name
             continue
-        candidates = [f for f in full_names if f.split()[0] == name]
+        candidates = [f for f in full_names if name in f.split()]
         if len(candidates) == 1:
             resolved[name] = candidates[0]
         else:
@@ -216,7 +231,21 @@ def parse_schedule(path: str | Path) -> ParseResult:
     return result
 
 
-async def save(result: ParseResult) -> None:
+# --- Сопоставление с педагогами в базе ---------------------------------------
+def _words(name: str) -> list[str]:
+    return name.lower().replace("ё", "е").replace(".", " ").split()
+
+
+def same_person(a: str, b: str) -> bool:
+    """«Навасардян Эльмира» = «Эльмира Навасардян»; «Филатов» = «Филатов Артем»."""
+    wa, wb = _words(a), _words(b)
+    if not wa or not wb:
+        return False
+    return sorted(wa) == sorted(wb) or compatible(wa, wb)
+
+
+async def save(result: ParseResult) -> list[str]:
+    notes: list[str] = []
     db = init_db(config.DB_PATH)
     await db.connect()
     try:
@@ -224,10 +253,45 @@ async def save(result: ParseResult) -> None:
         for group in result.groups:
             m = NUM_RE.search(group)
             group_ids[group] = await db.upsert_group(group, int(m.group()) if m else 999)
-        teacher_ids = {
-            name: await db.upsert_teacher(name, subjects)
-            for name, subjects in result.teachers.items()
-        }
+
+        existing = [dict(t) for t in await db.get_teachers()]
+        teacher_ids: dict[str, int] = {}
+        for name, subjects in result.teachers.items():
+            matches = [t for t in existing if same_person(t["full_name"], name)]
+
+            # «Абрамян» подходит и к Жанне, и к Элине — это разные люди, не сливаем
+            if len(matches) > 1 and not all(
+                same_person(matches[0]["full_name"], t["full_name"]) for t in matches[1:]
+            ):
+                exact = [t for t in matches if t["full_name"] == name]
+                if not exact:
+                    notes.append(
+                        f"⚠️ «{name}» подходит нескольким: "
+                        + ", ".join(t["full_name"] for t in matches)
+                        + " — уроки останутся без преподавателя"
+                    )
+                    continue
+                matches = exact
+
+            if not matches:
+                tid = await db.upsert_teacher(name, subjects)
+                existing.append({"id": tid, "full_name": name})
+                notes.append(f"+ новый педагог: {name}")
+                teacher_ids[name] = tid
+                continue
+
+            # Оставляем запись с точным совпадением, иначе — с самым длинным ФИО
+            matches.sort(key=lambda t: (t["full_name"] != name, -len(t["full_name"])))
+            keep = matches[0]
+            for dup in matches[1:]:
+                await db.merge_teachers(keep["id"], dup["id"])
+                existing = [t for t in existing if t["id"] != dup["id"]]
+                notes.append(f"~ дубль «{dup['full_name']}» объединён с «{keep['full_name']}»")
+            new_name = name if len(name) > len(keep["full_name"]) else keep["full_name"]
+            await db.update_teacher(keep["id"], new_name, subjects)
+            keep["full_name"] = new_name
+            teacher_ids[name] = keep["id"]
+
         await db.replace_schedule(
             (
                 group_ids[l.group],
@@ -238,6 +302,7 @@ async def save(result: ParseResult) -> None:
         )
     finally:
         await db.close()
+    return notes
 
 
 def main() -> None:
@@ -245,14 +310,23 @@ def main() -> None:
     parser.add_argument("file", type=Path, help="Путь к .xlsx")
     parser.add_argument("--dry-run", action="store_true", help="Только проверить, не записывать")
     args = parser.parse_args()
-
     if not args.file.exists():
         sys.exit(f"Файл не найден: {args.file}")
 
     result = parse_schedule(args.file)
+    per_teacher = Counter(l.teacher for l in result.lessons if l.teacher)
+    no_teacher = [l for l in result.lessons if not l.teacher]
+
     print(f"Классов: {len(result.groups)}")
-    print(f"Преподавателей: {len(result.teachers)}")
-    print(f"Уроков: {len(result.lessons)}")
+    print(f"Уроков: {len(result.lessons)}  (без преподавателя: {len(no_teacher)})")
+    print(f"Преподавателей: {len(per_teacher)}")
+    for name, count in sorted(per_teacher.items()):
+        print(f"  {name}: {count} ур.")
+    for l in no_teacher[:10]:
+        print(
+            f"  ⚠️ без преподавателя: {l.group}, {config.WEEKDAYS[l.weekday]}, "
+            f"{l.number} урок — «{l.subject}»"
+        )
     if result.warnings:
         print(f"\nПредупреждения ({len(result.warnings)}):")
         for w in result.warnings:
@@ -261,7 +335,8 @@ def main() -> None:
     if args.dry_run:
         print("\n--dry-run: в базу ничего не записано.")
         return
-    asyncio.run(save(result))
+    for note in asyncio.run(save(result)):
+        print(note)
     print("\n✅ Расписание загружено в", config.DB_PATH)
 
 

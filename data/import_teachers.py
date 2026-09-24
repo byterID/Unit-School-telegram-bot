@@ -86,8 +86,15 @@ def name_key(name: str) -> list[str]:
 
 
 def compatible(a: list[str], b: list[str]) -> bool:
-    """Совпадает ли фамилия, а имя/отчество — полностью или по инициалам."""
-    if not a or not b or a[0] != b[0]:
+    """
+    Один ли это человек: те же слова в другом порядке («Эльмира Навасардян» =
+    «Навасардян Эльмира») или та же фамилия, а имя/отчество — полностью или инициалами.
+    """
+    if not a or not b:
+        return False
+    if sorted(a) == sorted(b):
+        return True
+    if a[0] != b[0]:
         return False
     if len(a) > len(b):
         a, b = b, a
@@ -95,6 +102,7 @@ def compatible(a: list[str], b: list[str]) -> bool:
         if not (x == y or (len(x) == 1 and y.startswith(x)) or (len(y) == 1 and x.startswith(y))):
             return False
     return True
+
 
 
 def norm_phone(raw: str) -> str | None:
