@@ -11,7 +11,7 @@ import warnings
 
 from telegram.warnings import PTBUserWarning
 
-#диалоги смешивают кнопки и текстовый ввод
+# диалоги смешивают кнопки и текстовый ввод
 warnings.filterwarnings("ignore", message=r".*per_message=False.*", category=PTBUserWarning)
 
 import logging.handlers
@@ -24,7 +24,7 @@ from telegram.error import Forbidden, NetworkError, TelegramError
 from telegram.ext import AIORateLimiter, Application, ApplicationBuilder, ContextTypes
 
 import config
-from data import sample_data
+from data.import_faq import DEFAULT_FAQ
 from database import db, init_db
 from handlers import register_all
 
@@ -49,19 +49,14 @@ def setup_logging() -> None:
     file_handler.setFormatter(formatter)
     root.addHandler(file_handler)
 
-    # httpx слишком болтлив на уровне INFO
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("apscheduler").setLevel(logging.WARNING)
     logging.getLogger("telegram.ext.Application").setLevel(logging.INFO)
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    Глобальный обработчик ошибок: пишет traceback в лог и уведомляет
-    администраторов, чтобы проблемы не оставались незамеченными.
-    """
+    """Пишет traceback в лог и уведомляет администраторов."""
     if isinstance(context.error, NetworkError):
-        # Сетевые сбои PTB переживает сам — не спамим админов
         logger.warning("Сетевая ошибка: %s", context.error)
         return
 
@@ -84,13 +79,10 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     )
     for admin_id in config.ADMIN_IDS:
         try:
-            await context.bot.send_message(
-                admin_id, message, parse_mode=ParseMode.HTML
-            )
+            await context.bot.send_message(admin_id, message, parse_mode=ParseMode.HTML)
         except TelegramError:
             pass
 
-    # Сообщаем пользователю, что запрос не прошёл
     if isinstance(update, Update) and update.effective_message:
         try:
             await update.effective_message.reply_text(
@@ -101,36 +93,28 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def post_init(app: Application) -> None:
-    """Выполняется после инициализации: БД, seed-данные, меню команд."""
+    """БД, FAQ по умолчанию, меню команд."""
     init_db(config.DB_PATH)
     await db.connect()
-    if config.SEED_DEMO:
-        await sample_data.seed(db)
+    if not await db.get_faq():
+        await db.replace_faq(DEFAULT_FAQ)
+        logger.info("Загружен FAQ по умолчанию (%d вопросов)", len(DEFAULT_FAQ))
 
-    # Общее меню команд для всех пользователей
-    await app.bot.set_my_commands(config.USER_COMMANDS, scope=BotCommandScopeDefault())
-
-    # Расширенное меню для админов. Сработает только если чат с ботом уже
-    # существует (админ хоть раз нажимал /start); иначе Telegram вернёт
-    # "Chat not found" — это не ошибка, меню поставится при первом /start.
+    # У всех убираем меню команд; админам ставим своё
+    await app.bot.delete_my_commands(scope=BotCommandScopeDefault())
     for admin_id in config.ADMIN_IDS:
         try:
             await app.bot.set_my_commands(
                 config.ADMIN_COMMANDS, scope=BotCommandScopeChat(admin_id)
             )
         except TelegramError as exc:
-            logger.info(
-                "Меню админа %s будет установлено после его первого /start (%s)",
-                admin_id,
-                exc,
-            )
+            logger.info("Меню админа %s поставится после его первого сообщения (%s)", admin_id, exc)
 
     me = await app.bot.get_me()
     logger.info("Бот @%s запущен", me.username)
 
 
 async def post_shutdown(app: Application) -> None:
-    """Аккуратно закрываем соединение с БД."""
     await db.close()
 
 
@@ -141,7 +125,6 @@ def main() -> None:
     application = (
         ApplicationBuilder()
         .token(config.BOT_TOKEN)
-        # AIORateLimiter соблюдает лимиты Telegram автоматически
         .rate_limiter(AIORateLimiter(max_retries=3))
         .post_init(post_init)
         .post_shutdown(post_shutdown)
@@ -154,7 +137,7 @@ def main() -> None:
     logger.info("Запуск polling…")
     application.run_polling(
         allowed_updates=Update.ALL_TYPES,
-        drop_pending_updates=True,  # не обрабатывать накопившееся за время простоя
+        drop_pending_updates=True,
     )
 
 

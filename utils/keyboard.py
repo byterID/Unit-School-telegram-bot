@@ -384,3 +384,16 @@ def changes_back(day_key: str, group_id: int) -> InlineKeyboardMarkup:
         InlineKeyboardButton("🛠 Админ-панель", callback_data="adm:root"),
     ]])
 
+
+# --- Гость и «Назад» --------------------------------------------------------
+def guest_menu() -> InlineKeyboardMarkup:
+    """Экран до ввода кода приглашения."""
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("❓ Частые вопросы", callback_data="faq:list")]]
+    )
+
+
+def back_to(callback: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("⬅️ Назад", callback_data=callback), BACK_MAIN]]
+    )

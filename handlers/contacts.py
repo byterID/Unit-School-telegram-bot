@@ -58,6 +58,5 @@ async def contact_show(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 def register(app: Application) -> None:
-    app.add_handler(CommandHandler("contacts", cmd_contacts))
     app.add_handler(CallbackQueryHandler(cmd_contacts, pattern=r"^con:list(:\d+)?$"))
     app.add_handler(CallbackQueryHandler(contact_show, pattern=r"^con:t:\d+:\d+$"))

@@ -108,7 +108,7 @@ async def my_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         scope, obj_id = "t", row["teacher_id"]
     else:
         await query.edit_message_text(
-            "Класс или профиль пока не указан — загляните в /settings.",
+            "Класс или профиль пока не указан — укажите его в «⚙️ Настройки».",
             reply_markup=_main_menu(update),
         )
         return
@@ -154,7 +154,6 @@ async def show_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 def register(app: Application) -> None:
-    app.add_handler(CommandHandler("schedule", cmd_schedule))
     app.add_handler(CallbackQueryHandler(cmd_schedule, pattern=r"^sch:root$"))
     app.add_handler(CallbackQueryHandler(choose_group, pattern=r"^sch:groups$"))
     app.add_handler(CallbackQueryHandler(choose_teacher, pattern=r"^sch:teachers(:\d+)?$"))

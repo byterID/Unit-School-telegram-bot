@@ -65,7 +65,6 @@ async def show_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         text, parse_mode=ParseMode.HTML, reply_markup=kb.menu_days()
     )
 def register(app: Application) -> None:
-    app.add_handler(CommandHandler("menu", cmd_menu))
     app.add_handler(CallbackQueryHandler(cmd_menu, pattern=r"^menu:root$"))
     app.add_handler(
         CallbackQueryHandler(
