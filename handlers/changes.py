@@ -32,6 +32,7 @@ from utils import keyboard as kb
 from utils import timetable as tt
 from utils.broadcast import send_many
 from utils.decorators import admin_only, safe_handler
+from utils import screen
 
 logger = logging.getLogger(__name__)
 
@@ -347,10 +348,7 @@ async def chg_input_start(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return ConversationHandler.END
     await query.answer()
     context.user_data["chg"] = (_day_key(d), group_id)
-    # Отдельным сообщением, чтобы расписание осталось видно выше
-    await query.message.reply_text(
-        _help_text(f"{group['name']} • {fmt.day_label(d)}"), parse_mode=ParseMode.HTML
-    )
+    await screen.show(update, context, _help_text(f"{group['name']} • {fmt.day_label(d)}"))
     return CHG_TEXT
 
 
@@ -359,13 +357,13 @@ async def chg_input_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     message = update.message
     saved = context.user_data.get("chg")
     if not saved:
-        await message.reply_text("Сессия истекла, начните заново: /admin")
+        await screen.show(update, context, "Сессия истекла, начните заново.", kb.admin_root())
         return ConversationHandler.END
     raw_day, group_id = saved
     d = _parse_day(raw_day)
     if d is None:
         context.user_data.pop("chg", None)
-        await message.reply_text("Эта дата уже прошла, выберите другую.", reply_markup=kb.admin_root())
+        await screen.show(update, context, "Эта дата уже прошла, выберите другую.", kb.admin_root())
         return ConversationHandler.END
 
     base_rows = await db.get_lessons_by_group(group_id, d.isoweekday())
@@ -374,11 +372,14 @@ async def chg_input_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         message.text or "", base, await db.get_bells(), await db.get_teachers()
     )
     if errors:
-        await message.reply_text(
-            "⚠️ <b>Ничего не сохранено.</b> Исправьте ошибки и пришлите всё сообщение заново:\n\n"
-            + "\n".join(errors)
-            + "\n\nОтмена: /cancel",
-            parse_mode=ParseMode.HTML,
+        await screen.show(
+            update, context,
+            fmt.fit(
+                "⚠️ <b>Ничего не сохранено.</b> Исправьте ошибки и пришлите всё сообщение "
+                "заново (ваш текст остался выше):\n\n" + "\n".join(errors)
+                + "\n\nОтмена: /cancel"
+            ),
+            keep_input=True,
         )
         return CHG_TEXT
 
@@ -389,23 +390,20 @@ async def chg_input_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         update.effective_user.id, len(items), d, group_id,
     )
     text, markup = await _editor_view(d, group_id)
-    await message.reply_text(
+    await screen.show(
+        update, context,
         fmt.fit(
             f"✅ Сохранено изменений: {len(items)}\n"
             "Не забудьте нажать «📣 Уведомить класс».\n\n" + text
         ),
-        parse_mode=ParseMode.HTML,
-        reply_markup=markup,
+        markup,
     )
     return ConversationHandler.END
 
 
 async def chg_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.pop("chg", None)
-    if update.message:
-        await update.message.reply_text(
-            "Отменено, изменения не сохранены.", reply_markup=kb.admin_root()
-        )
+    await screen.show(update, context, "Отменено, изменения не сохранены.", kb.admin_root())
     return ConversationHandler.END
 
 

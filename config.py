@@ -104,21 +104,10 @@ ROLES: dict[str, str] = {
     "admin": "Администратор",
 }
 
-# --- Меню команд бота -------------------------------------------------------
-# Держим здесь, а не в bot.py, чтобы обработчики могли импортировать
-# списки без циклического импорта.
-USER_COMMANDS: list[BotCommand] = [
-    BotCommand("start", "Запустить бота / главное меню"),
-    BotCommand("schedule", "📅 Расписание занятий"),
-    BotCommand("menu", "🍽 Меню столовой"),
-    BotCommand("contacts", "📞 Контакты преподавателей"),
-    BotCommand("news", "📢 Объявления"),
-    BotCommand("faq", "❓ Частые вопросы"),
-    BotCommand("settings", "⚙️ Настройки"),
-    BotCommand("help", "ℹ️ Справка"),
-]
+# У учеников команд нет — общение кнопками. Админам — служебные команды.
+USER_COMMANDS: list[BotCommand] = []
 
-ADMIN_COMMANDS: list[BotCommand] = USER_COMMANDS + [
+ADMIN_COMMANDS: list[BotCommand] = [
     BotCommand("admin", "🛠 Админ-панель"),
     BotCommand("announce", "📢 Создать объявление"),
     BotCommand("cancel", "Отменить текущее действие"),

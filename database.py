@@ -580,6 +580,71 @@ class Database:
             await self.conn.rollback()
             raise
 
+
+    # --- Дополнительно: админ, слияние педагогов, импорт меню -------------
+    async def ensure_admin(self, user_id: int) -> None:
+        await self._execute(
+            "UPDATE users SET role = 'admin', verified = 1, updated_at = ? "
+            "WHERE user_id = ? AND (role <> 'admin' OR verified = 0)",
+            (_now(), user_id),
+        )
+
+    async def update_teacher(self, teacher_id: int, full_name: str, subject: str | None) -> None:
+        try:
+            await self._execute(
+                "UPDATE teachers SET full_name = ?, subject = ? WHERE id = ?",
+                (full_name, subject, teacher_id),
+            )
+        except sqlite3.IntegrityError:  # такое ФИО уже занято — меняем только предмет
+            await self._execute(
+                "UPDATE teachers SET subject = ? WHERE id = ?", (subject, teacher_id)
+            )
+
+    async def merge_teachers(self, keep_id: int, drop_id: int) -> None:
+        """Сливает дубль: все ссылки переходят к keep_id, пустые контакты дополняются."""
+        try:
+            for table in ("lessons", "schedule_changes", "users", "invites"):  # фиксированный список
+                await self.conn.execute(
+                    f"UPDATE {table} SET teacher_id = ? WHERE teacher_id = ?", (keep_id, drop_id)
+                )
+            await self.conn.execute(
+                """
+                UPDATE teachers SET
+                    phone = COALESCE(phone, (SELECT phone FROM teachers WHERE id = ?)),
+                    room  = COALESCE(room,  (SELECT room  FROM teachers WHERE id = ?)),
+                    email = COALESCE(email, (SELECT email FROM teachers WHERE id = ?))
+                WHERE id = ?
+                """,
+                (drop_id, drop_id, drop_id, keep_id),
+            )
+            await self.conn.execute("DELETE FROM teachers WHERE id = ?", (drop_id,))
+            await self.conn.commit()
+        except Exception:
+            await self.conn.rollback()
+            raise
+
+    async def replace_menu(self, menu) -> None:
+        """menu: {weekday: {meal_type: [блюда]}}. Дни из menu заменяются целиком."""
+        rows = [
+            (wd, meal, name, i)
+            for wd, meals in menu.items()
+            for meal, names in meals.items()
+            for i, name in enumerate(names, start=1)
+        ]
+        try:
+            for wd in menu:
+                await self.conn.execute("DELETE FROM dishes WHERE weekday = ?", (wd,))
+            await self.conn.executemany(
+                "INSERT INTO dishes (weekday, meal_type, name, sort) VALUES (?, ?, ?, ?)", rows
+            )
+            await self.conn.commit()
+        except Exception:
+            await self.conn.rollback()
+            raise
+
+
+
+
     # --- Коды приглашения -------------------------------------------------
     async def revoke_invites(self, kind: str, obj_id: int) -> None:
         # Имя колонки выбирается из фиксированного набора — не из ввода пользователя

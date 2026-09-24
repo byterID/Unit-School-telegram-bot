@@ -24,6 +24,7 @@ import config
 from database import db
 from utils import formatting as fmt
 from utils import keyboard as kb
+from utils import screen
 from utils.decorators import admin_only, safe_handler
 
 logger = logging.getLogger(__name__)
@@ -39,14 +40,9 @@ def _invite_link(context: ContextTypes.DEFAULT_TYPE, code: str) -> str:
 @admin_only
 @safe_handler
 async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    text = "🛠 <b>Админ-панель</b>\n\nВыберите действие:"
     if update.callback_query:
         await update.callback_query.answer()
-        await update.callback_query.edit_message_text(
-            text, parse_mode=ParseMode.HTML, reply_markup=kb.admin_root()
-        )
-    elif update.message:
-        await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb.admin_root())
+    await screen.show(update, context, "🛠 <b>Админ-панель</b>\n\nВыберите действие:", kb.admin_root())
 
 
 @admin_only
@@ -57,7 +53,7 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     s = await db.get_stats()
     text = (
         "📊 <b>Статистика</b>\n\n"
-        f"👥 Всего нажимали /start: {s.get('users_total', 0)}\n"
+        f"👥 Всего пользователей: {s.get('users_total', 0)}\n"
         f"🔑 Вошли по коду: {s.get('verified', 0)}\n"
         f"🎒 Учеников/родителей: {s.get('students', 0)}\n"
         f"👨‍🏫 Преподавателей: {s.get('teachers_users', 0)}\n"
@@ -144,11 +140,11 @@ async def dish_add_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     _, _, raw_day, meal_type = query.data.split(":")
     context.user_data["dish_weekday"] = int(raw_day)
     context.user_data["dish_meal"] = meal_type
-    await query.edit_message_text(
+    await screen.show(
+        update, context,
         f"✍️ Пришлите название блюда для <b>{config.WEEKDAYS[int(raw_day)]}</b> — "
         f"{config.MEAL_TYPES.get(meal_type, meal_type)}.\n\n"
         "Можно несколько — каждое с новой строки.\nОтмена: /cancel",
-        parse_mode=ParseMode.HTML,
     )
     return ADD_DISH
 
@@ -158,22 +154,25 @@ async def dish_add_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     weekday = context.user_data.get("dish_weekday")
     meal_type = context.user_data.get("dish_meal")
     if weekday is None or meal_type is None:
-        await update.message.reply_text("Сессия истекла, начните заново: /admin")
+        await screen.show(update, context, "Сессия истекла, начните заново.", kb.admin_root())
         return ConversationHandler.END
 
     names = [line.strip() for line in update.message.text.splitlines() if line.strip()]
     if not names:
-        await update.message.reply_text("Пустое название. Попробуйте ещё раз.")
+        await screen.show(
+            update, context, "Пустое название. Попробуйте ещё раз.\n\nОтмена: /cancel",
+            keep_input=True,
+        )
         return ADD_DISH
     for name in names[:30]:
         await db.add_dish(weekday, meal_type, name[:200])
 
     dishes = await db.get_dishes(weekday, meal_type)
-    await update.message.reply_text(
+    await screen.show(
+        update, context,
         fmt.fit(f"✅ Добавлено: {min(len(names), 30)}\n\n"
                 + "\n".join(f"• {fmt.esc(d['name'])}" for d in dishes)),
-        parse_mode=ParseMode.HTML,
-        reply_markup=kb.admin_dish_editor(weekday, meal_type, dishes),
+        kb.admin_dish_editor(weekday, meal_type, dishes),
     )
     context.user_data.pop("dish_weekday", None)
     context.user_data.pop("dish_meal", None)
@@ -183,12 +182,12 @@ async def dish_add_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 # --- Объявления -------------------------------------------------------------
 @admin_only
 async def ann_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    text = "📢 Пришлите текст объявления (можно с форматированием).\n\nОтмена: /cancel"
     if update.callback_query:
         await update.callback_query.answer()
-        await update.callback_query.edit_message_text(text)
-    else:
-        await update.message.reply_text(text)
+    await screen.show(
+        update, context,
+        "📢 Пришлите текст объявления (можно с форматированием).\n\nОтмена: /cancel",
+    )
     return ANN_TEXT
 
 
@@ -197,22 +196,25 @@ async def ann_preview(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     msg = update.message
     plain = (msg.text or "").strip()
     if not plain:
-        await msg.reply_text("Текст пустой, попробуйте снова.")
+        await screen.show(update, context, "Текст пустой, попробуйте снова.", keep_input=True)
         return ANN_TEXT
     if len(plain) > 3500:
-        await msg.reply_text(
-            f"Слишком длинно: {len(plain)} символов (максимум 3500). Сократите и пришлите снова."
+        await screen.show(
+            update, context,
+            f"Слишком длинно: {len(plain)} символов (максимум 3500). "
+            "Сократите и пришлите снова.\n\nОтмена: /cancel",
+            keep_input=True,
         )
         return ANN_TEXT
 
     context.user_data["ann_text"] = msg.text_html  # безопасный HTML из entities
     targets = await db.get_broadcast_targets()
-    await msg.reply_text(
+    await screen.show(
+        update, context,
         "<b>Предпросмотр объявления:</b>\n\n"
         f"📢 {context.user_data['ann_text']}\n\n"
         f"Получателей: <b>{len(targets)}</b>. Отправить?",
-        parse_mode=ParseMode.HTML,
-        reply_markup=kb.confirm_broadcast(),
+        kb.confirm_broadcast(),
     )
     return ConversationHandler.END
 
@@ -239,11 +241,14 @@ async def ann_send(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     ann_id = await db.add_announcement(update.effective_user.id, text)
     await query.edit_message_text("📤 Рассылка запущена…")
-    context.application.create_task(_broadcast(context, ann_id, text, query.message.chat_id))
+    context.application.create_task(
+        _broadcast(context, ann_id, text, query.message.chat_id, query.message.message_id)
+    )
 
 
 async def _broadcast(
-    context: ContextTypes.DEFAULT_TYPE, ann_id: int, text: str, report_chat_id: int
+    context: ContextTypes.DEFAULT_TYPE, ann_id: int, text: str,
+    report_chat_id: int, report_msg_id: int,
 ) -> None:
     targets = await db.get_broadcast_targets()
     payload = f"📢 <b>Объявление</b>\n\n{text}"
@@ -268,12 +273,17 @@ async def _broadcast(
         await asyncio.sleep(config.BROADCAST_DELAY)
 
     await db.set_announcement_sent(ann_id, sent)
-    await context.bot.send_message(
-        report_chat_id,
+    report = (
         f"✅ Рассылка завершена\n\nДоставлено: {sent}\n"
-        f"Заблокировали бота: {blocked}\nОшибок: {failed}",
-        reply_markup=kb.admin_root(),
+        f"Заблокировали бота: {blocked}\nОшибок: {failed}"
     )
+    try:  # отчёт — в тот же экран, а не новым сообщением
+        await context.bot.edit_message_text(
+            report, chat_id=report_chat_id, message_id=report_msg_id,
+            reply_markup=kb.admin_root(),
+        )
+    except TelegramError:
+        await context.bot.send_message(report_chat_id, report, reply_markup=kb.admin_root())
 
 
 # --- Коды классов -----------------------------------------------------------
@@ -418,10 +428,7 @@ async def tch_unlink(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     for key in ("dish_weekday", "dish_meal", "ann_text"):
         context.user_data.pop(key, None)
-    if update.message:
-        text = "Отменено." if update.message.text.startswith("/cancel") else \
-            "Действие отменено. Повторите команду, если она нужна."
-        await update.message.reply_text(text, reply_markup=kb.admin_root())
+    await screen.show(update, context, "Отменено.", kb.admin_root())
     return ConversationHandler.END
 
 
